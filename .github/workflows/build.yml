@@ -1,0 +1,113 @@
+name: Build Android App
+
+on:
+  workflow_dispatch:
+    inputs:
+      app_url:
+        description: 'Live URL to load in WebView'
+        required: true
+      app_name:
+        description: 'App name shown on home screen'
+        required: true
+      app_slug:
+        description: 'App slug (used for package ID suffix)'
+        required: true
+      order_id:
+        description: 'APK order ID for callback'
+        required: true
+      notify_url:
+        description: 'Webhook URL to call when done'
+        required: true
+      notify_key:
+        description: 'Auth key for webhook'
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout template
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Set up Gradle wrapper
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Inject app URL, name and slug
+        run: |
+          # Sanitize slug — only lowercase letters and digits, max 20 chars
+          SAFE_SLUG=$(echo "${{ inputs.app_slug }}" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9' | head -c 20)
+          if [ -z "$SAFE_SLUG" ]; then SAFE_SLUG="vulaapp"; fi
+          echo "SAFE_SLUG=${SAFE_SLUG}" >> $GITHUB_ENV
+
+          # Update package in Kotlin source
+          DEST_DIR="app/src/main/java/works/codeapes/vula/${SAFE_SLUG}"
+          mkdir -p "${DEST_DIR}"
+          sed "s|works.codeapes.vulaapp|works.codeapes.vula.${SAFE_SLUG}|g; \
+               s|APP_URL_PLACEHOLDER|${{ inputs.app_url }}|g" \
+            app/src/main/java/works/codeapes/vulaapp/MainActivity.kt \
+            > "${DEST_DIR}/MainActivity.kt"
+          rm -rf app/src/main/java/works/codeapes/vulaapp
+
+          # Escape app name for XML
+          SAFE_NAME=$(echo "${{ inputs.app_name }}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&apos;/g')
+
+          # Update manifest
+          sed -i "s|APP_SLUG_PLACEHOLDER|${SAFE_SLUG}|g" app/src/main/AndroidManifest.xml
+          sed -i "s|works.codeapes.vulaapp|works.codeapes.vula.${SAFE_SLUG}|g" app/src/main/AndroidManifest.xml
+          sed -i "s|APP_NAME_PLACEHOLDER|${SAFE_NAME}|g" app/src/main/AndroidManifest.xml
+
+          # Update app/build.gradle
+          sed -i "s|APP_SLUG_PLACEHOLDER|${SAFE_SLUG}|g" app/build.gradle
+
+      - name: Decode keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+
+      - name: Build release APK
+        env:
+          KEYSTORE_PATH: ${{ github.workspace }}/keystore.jks
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+          KEYSTORE_ALIAS: ${{ secrets.KEYSTORE_ALIAS }}
+          KEY_PASS: ${{ secrets.KEY_PASS }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Rename APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/app-release.apk \
+             "dist/${{ env.SAFE_SLUG }}.apk"
+
+      - name: Upload APK as release asset
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "order-${{ inputs.order_id }}"
+          name: "${{ inputs.app_name }}"
+          body: "Order #${{ inputs.order_id }} — built by VulaApp"
+          files: dist/${{ env.SAFE_SLUG }}.apk
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify VulaApp — success
+        run: |
+          APK_URL=$(echo '${{ steps.release.outputs.assets }}' \
+            | python3 -c "import sys,json; a=json.load(sys.stdin); print(a[0]['browser_download_url'] if a else '')" 2>/dev/null || echo "")
+          curl -s -X POST "${{ inputs.notify_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"order_id\":\"${{ inputs.order_id }}\",\"apk_url\":\"${APK_URL}\",\"key\":\"${{ inputs.notify_key }}\"}"
+
+      - name: Notify VulaApp — failure
+        if: failure()
+        run: |
+          curl -s -X POST "${{ inputs.notify_url }}" \
+            -H "Content-Type: application/json" \
+            -d "{\"order_id\":\"${{ inputs.order_id }}\",\"error\":\"build_failed\",\"key\":\"${{ inputs.notify_key }}\"}"
