@@ -46,24 +46,15 @@ jobs:
           if [ -z "$SAFE_SLUG" ]; then SAFE_SLUG="vulaapp"; fi
           echo "SAFE_SLUG=${SAFE_SLUG}" >> $GITHUB_ENV
 
-          # Update package in Kotlin source
-          DEST_DIR="app/src/main/java/works/codeapes/vula/${SAFE_SLUG}"
-          mkdir -p "${DEST_DIR}"
-          sed "s|works.codeapes.vulaapp|works.codeapes.vula.${SAFE_SLUG}|g; \
-               s|APP_URL_PLACEHOLDER|${{ inputs.app_url }}|g" \
-            app/src/main/java/works/codeapes/vulaapp/MainActivity.kt \
-            > "${DEST_DIR}/MainActivity.kt"
-          rm -rf app/src/main/java/works/codeapes/vulaapp
+          # Inject app URL into MainActivity (namespace stays works.codeapes.vulaapp)
+          sed -i "s|APP_URL_PLACEHOLDER|${{ inputs.app_url }}|g" \
+            app/src/main/java/works/codeapes/vulaapp/MainActivity.kt
 
-          # Escape app name for XML
+          # Escape app name for XML and inject into manifest
           SAFE_NAME=$(echo "${{ inputs.app_name }}" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g; s/'"'"'/\&apos;/g')
-
-          # Update manifest
-          sed -i "s|APP_SLUG_PLACEHOLDER|${SAFE_SLUG}|g" app/src/main/AndroidManifest.xml
-          sed -i "s|works.codeapes.vulaapp|works.codeapes.vula.${SAFE_SLUG}|g" app/src/main/AndroidManifest.xml
           sed -i "s|APP_NAME_PLACEHOLDER|${SAFE_NAME}|g" app/src/main/AndroidManifest.xml
 
-          # Update app/build.gradle
+          # Update applicationId in app/build.gradle (namespace stays static)
           sed -i "s|APP_SLUG_PLACEHOLDER|${SAFE_SLUG}|g" app/build.gradle
 
       - name: Decode keystore
