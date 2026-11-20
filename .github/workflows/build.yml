@@ -67,7 +67,13 @@ jobs:
           sed -i "s|APP_SLUG_PLACEHOLDER|${SAFE_SLUG}|g" app/build.gradle
 
       - name: Decode keystore
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+        run: |
+          if [ -z "${{ secrets.KEYSTORE_BASE64 }}" ]; then
+            echo "ERROR: KEYSTORE_BASE64 secret not set."
+            echo "Run the 'Setup Keystore' workflow once and follow the instructions."
+            exit 1
+          fi
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
 
       - name: Build release APK
         env:
